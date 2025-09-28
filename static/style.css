@@ -1,0 +1,17 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.hero-title {
+    font-weight: 600;
+}
+
+.table-sm td,
+.table-sm th {
+    padding: 0.35rem;
+}
+
+.chart-container {
+    position: relative;
+    height: 320px;
+}

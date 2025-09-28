@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+{% block content %}
+  <div class="row">
+    <div class="col-12">
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h1 class="h3 hero-title mb-3">Cyklistická kalkulačka výkonu / pacingu</h1>
+          <p class="text-muted">Nahrajte GPX soubor, nastavte parametry a získejte doporučení výkonu a rychlosti pro jednotlivé úseky.</p>
+          {% if errors %}
+            <div class="alert alert-danger" role="alert">
+              <ul class="mb-0">
+                {% for err in errors %}
+                  <li>{{ err }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+          <form method="post" enctype="multipart/form-data" id="calc-form">
+            <div class="row g-3">
+              <div class="col-md-6">
+                <label for="gpx" class="form-label">GPX soubor</label>
+                <input class="form-control" type="file" id="gpx" name="gpx" accept=".gpx" required>
+              </div>
+              <div class="col-md-3">
+                <label for="weight_rider" class="form-label">Hmotnost jezdce (kg)</label>
+                <input type="number" step="0.1" min="1" class="form-control" id="weight_rider" name="weight_rider" value="{{ form_data.weight_rider or '' }}" required>
+              </div>
+              <div class="col-md-3">
+                <label for="weight_bike" class="form-label">Hmotnost kola (kg)</label>
+                <input type="number" step="0.1" min="1" class="form-control" id="weight_bike" name="weight_bike" value="{{ form_data.weight_bike or '' }}" required>
+              </div>
+              <div class="col-md-3">
+                <label for="ftp" class="form-label">FTP (W)</label>
+                <input type="number" step="1" min="1" class="form-control" id="ftp" name="ftp" value="{{ form_data.ftp or '' }}" required>
+              </div>
+              <div class="col-md-9">
+                <label class="form-label d-block">Režim výpočtu</label>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="mode" id="mode_speed" value="speed" {% if form_data.mode != 'rpe' %}checked{% endif %}>
+                  <label class="form-check-label" for="mode_speed">Cílová rychlost</label>
+                </div>
+                <div class="form-check form-check-inline">
+                  <input class="form-check-input" type="radio" name="mode" id="mode_rpe" value="rpe" {% if form_data.mode == 'rpe' %}checked{% endif %}>
+                  <label class="form-check-label" for="mode_rpe">Cílové RPE</label>
+                </div>
+              </div>
+              <div class="col-md-4" id="speed-group">
+                <label for="target_speed" class="form-label">Cílová rychlost (km/h)</label>
+                <input type="number" step="0.1" min="5" max="60" class="form-control" id="target_speed" name="target_speed" value="{{ form_data.target_speed or '' }}">
+              </div>
+              <div class="col-md-8 d-none" id="rpe-group">
+                <label for="target_rpe" class="form-label">Cílové RPE</label>
+                <div class="d-flex align-items-center gap-3">
+                  <input type="range" class="form-range" id="target_rpe" name="target_rpe" min="1" max="10" step="1" value="{{ form_data.target_rpe or 7 }}">
+                  <span class="badge bg-primary" id="rpe-percent">&nbsp;</span>
+                </div>
+              </div>
+            </div>
+            <div class="mt-4">
+              <button type="submit" class="btn btn-primary">Spočítat</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if results %}
+    <div class="row">
+      <div class="col-12">
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h4 mb-3">Souhrn</h2>
+            <div class="row text-center">
+              <div class="col-md-3 col-6 mb-3">
+                <div class="fw-semibold text-muted">Celková vzdálenost</div>
+                <div class="fs-5">{{ results.summary.total_distance_km }} km</div>
+              </div>
+              <div class="col-md-3 col-6 mb-3">
+                <div class="fw-semibold text-muted">Převýšení ↑</div>
+                <div class="fs-5">{{ results.summary.total_ascent }} m</div>
+              </div>
+              <div class="col-md-3 col-6 mb-3">
+                <div class="fw-semibold text-muted">Převýšení ↓</div>
+                <div class="fs-5">{{ results.summary.total_descent }} m</div>
+              </div>
+              <div class="col-md-3 col-6 mb-3">
+                <div class="fw-semibold text-muted">Průměrná rychlost</div>
+                <div class="fs-5">{{ results.summary.avg_speed_kmh }} km/h</div>
+              </div>
+              <div class="col-12">
+                <div class="fw-semibold text-muted">Odhadovaný čas</div>
+                <div class="fs-5">{{ results.summary.total_time }}</div>
+              </div>
+            </div>
+            <div class="text-end">
+              <a href="{{ url_for('export_csv') }}" class="btn btn-outline-secondary btn-sm">Stáhnout CSV</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-12">
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h4 mb-3">Segmenty</h2>
+            <div class="table-responsive">
+              <table class="table table-striped table-sm align-middle">
+                <thead class="table-light">
+                  <tr>
+                    <th>#</th>
+                    <th>km od</th>
+                    <th>km do</th>
+                    <th>Délka (m)</th>
+                    <th>Sklon (%)</th>
+                    <th>Výkon (W)</th>
+                    <th>Rychlost (km/h)</th>
+                    <th>Čas</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for seg in results.segments %}
+                    <tr>
+                      <td>{{ seg.index }}</td>
+                      <td>{{ seg.km_from }}</td>
+                      <td>{{ seg.km_to }}</td>
+                      <td>{{ seg.length_m }}</td>
+                      <td>{{ seg.grade_percent }}</td>
+                      <td>{{ seg.power_w }}</td>
+                      <td>{{ seg.speed_kmh }}</td>
+                      <td>{{ seg.time_str }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Výkon vs. vzdálenost</h2>
+            <div class="chart-container">
+              <canvas id="powerChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Sklon vs. vzdálenost</h2>
+            <div class="chart-container">
+              <canvas id="gradeChart"></canvas>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script>
+    const modeSpeed = document.getElementById('mode_speed');
+    const modeRpe = document.getElementById('mode_rpe');
+    const speedGroup = document.getElementById('speed-group');
+    const rpeGroup = document.getElementById('rpe-group');
+    const rpeSlider = document.getElementById('target_rpe');
+    const rpePercent = document.getElementById('rpe-percent');
+    const RPE_TO_PERCENT = {1:35,2:50,3:60,4:70,5:80,6:90,7:100,8:105,9:115,10:130};
+
+    function updateMode() {
+      if (modeRpe.checked) {
+        speedGroup.classList.add('d-none');
+        rpeGroup.classList.remove('d-none');
+      } else {
+        speedGroup.classList.remove('d-none');
+        rpeGroup.classList.add('d-none');
+      }
+    }
+
+    function updateRpeBadge() {
+      const val = rpeSlider.value;
+      const pct = RPE_TO_PERCENT[val] || 0;
+      rpePercent.textContent = `≈ ${pct}% FTP`;
+    }
+
+    if (modeSpeed && modeRpe) {
+      modeSpeed.addEventListener('change', updateMode);
+      modeRpe.addEventListener('change', updateMode);
+      updateMode();
+    }
+    if (rpeSlider) {
+      rpeSlider.addEventListener('input', updateRpeBadge);
+      updateRpeBadge();
+    }
+
+    {% if results %}
+    const distanceLabels = {{ results.chart.distance_km | tojson }};
+    const powerValues = {{ results.chart.power_w | tojson }};
+    const gradeValues = {{ results.chart.grade_percent | tojson }};
+
+    const powerCtx = document.getElementById('powerChart');
+    const gradeCtx = document.getElementById('gradeChart');
+
+    new Chart(powerCtx, {
+      type: 'line',
+      data: {
+        labels: distanceLabels,
+        datasets: [{
+          label: 'Výkon (W)',
+          data: powerValues,
+          borderColor: '#0d6efd',
+          tension: 0.2,
+          fill: false
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: true },
+          tooltip: { enabled: true }
+        },
+        scales: {
+          x: { title: { display: true, text: 'Vzdálenost (km)' } },
+          y: { title: { display: true, text: 'Výkon (W)' } }
+        }
+      }
+    });
+
+    new Chart(gradeCtx, {
+      type: 'line',
+      data: {
+        labels: distanceLabels,
+        datasets: [{
+          label: 'Sklon (%)',
+          data: gradeValues,
+          borderColor: '#198754',
+          tension: 0.2,
+          fill: false
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { display: true },
+          tooltip: { enabled: true }
+        },
+        scales: {
+          x: { title: { display: true, text: 'Vzdálenost (km)' } },
+          y: { title: { display: true, text: 'Sklon (%)' } }
+        }
+      }
+    });
+    {% endif %}
+  </script>
+{% endblock %}
