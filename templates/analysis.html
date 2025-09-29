@@ -1,0 +1,247 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-sA+4Z8gKaG6H2f7YwP06GQICN6C1ogZmX3vFhJZ7yp8=" crossorigin="" />
+{% endblock %}
+
+{% block content %}
+  <div class="row">
+    <div class="col-12">
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h1 class="h3 mb-3">Analýza tréninku</h1>
+          <p class="text-muted">Nahrajte TCX nebo FIT soubor a získejte mapu, základní metriky i grafy důležitých veličin.</p>
+          {% if errors %}
+            <div class="alert alert-danger" role="alert">
+              <ul class="mb-0">
+                {% for err in errors %}
+                  <li>{{ err }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+          <form method="post" enctype="multipart/form-data">
+            <div class="row g-3 align-items-end">
+              <div class="col-12 col-md-9">
+                <label for="workout" class="form-label">Tréninkový soubor (TCX nebo FIT)</label>
+                <input type="file" class="form-control" id="workout" name="workout" accept=".tcx,.fit" required>
+              </div>
+              <div class="col-12 col-md-3 text-md-end">
+                <button type="submit" class="btn btn-primary w-100">Nahrát a analyzovat</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if analysis %}
+    <div class="row">
+      <div class="col-12">
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h4 mb-3">Mapa trasy</h2>
+            <div id="analysisMap" class="analysis-map"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="col-12">
+        <div class="card shadow-sm mb-4">
+          <div class="card-body">
+            <h2 class="h4 mb-3">Souhrnné statistiky</h2>
+            <div class="table-responsive">
+              <table class="table table-striped mb-0">
+                <tbody>
+                  <tr><th>Celkový čas</th><td>{{ analysis.summary.total_time }}</td></tr>
+                  <tr><th>Vzdálenost</th><td>{{ analysis.summary.distance_km }} km</td></tr>
+                  <tr>
+                    <th>Převýšení ↑</th>
+                    <td>
+                      {{ analysis.summary.elevation_gain }}{% if analysis.summary.elevation_gain != '—' %} m{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Převýšení ↓</th>
+                    <td>
+                      {{ analysis.summary.elevation_loss }}{% if analysis.summary.elevation_loss != '—' %} m{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Průměrná rychlost</th>
+                    <td>
+                      {{ analysis.summary.avg_speed }}{% if analysis.summary.avg_speed != '—' %} km/h{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Max rychlost</th>
+                    <td>
+                      {{ analysis.summary.max_speed }}{% if analysis.summary.max_speed != '—' %} km/h{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Průměrný tep</th>
+                    <td>
+                      {{ analysis.summary.avg_hr }}{% if analysis.summary.avg_hr != '—' %} bpm{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Max tep</th>
+                    <td>
+                      {{ analysis.summary.max_hr }}{% if analysis.summary.max_hr != '—' %} bpm{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Průměrný výkon</th>
+                    <td>
+                      {{ analysis.summary.avg_power }}{% if analysis.summary.avg_power != '—' %} W{% endif %}
+                    </td>
+                  </tr>
+                  <tr>
+                    <th>Max výkon</th>
+                    <td>
+                      {{ analysis.summary.max_power }}{% if analysis.summary.max_power != '—' %} W{% endif %}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Heart rate vs. čas</h2>
+            {% if analysis.has_heart_rate %}
+              <div class="chart-container">
+                <canvas id="hrChart"></canvas>
+              </div>
+            {% else %}
+              <p class="text-muted mb-0">V souboru nejsou data o tepové frekvenci.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Výkon vs. čas</h2>
+            {% if analysis.has_power %}
+              <div class="chart-container">
+                <canvas id="powerChart"></canvas>
+              </div>
+            {% else %}
+              <p class="text-muted mb-0">V souboru nejsou data o výkonu.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Rychlost vs. čas</h2>
+            {% if analysis.has_speed %}
+              <div class="chart-container">
+                <canvas id="speedChart"></canvas>
+              </div>
+            {% else %}
+              <p class="text-muted mb-0">V souboru nejsou data o rychlosti.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="col-12 col-lg-6">
+        <div class="card shadow-sm h-100">
+          <div class="card-body">
+            <h2 class="h5 mb-3">Nadmořská výška vs. vzdálenost</h2>
+            {% if analysis.has_elevation %}
+              <div class="chart-container">
+                <canvas id="elevationChart"></canvas>
+              </div>
+            {% else %}
+              <p class="text-muted mb-0">V souboru nejsou data o nadmořské výšce.</p>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  {% if analysis %}
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-o9N1j7kP6G6Lk0NseyX2VINeodui6QI7dP5L0SYJ3oU=" crossorigin=""></script>
+    <script>
+      const mapPoints = {{ analysis.map_points | tojson }};
+      const timeLabels = {{ analysis.charts.time_labels | tojson }};
+      const distanceLabels = {{ analysis.charts.distance_labels | tojson }};
+      const heartRate = {{ analysis.charts.heart_rate | tojson }};
+      const power = {{ analysis.charts.power | tojson }};
+      const speed = {{ analysis.charts.speed | tojson }};
+      const elevation = {{ analysis.charts.elevation | tojson }};
+      const hasHeartRate = {{ 'true' if analysis.has_heart_rate else 'false' }};
+      const hasPower = {{ 'true' if analysis.has_power else 'false' }};
+      const hasSpeed = {{ 'true' if analysis.has_speed else 'false' }};
+      const hasElevation = {{ 'true' if analysis.has_elevation else 'false' }};
+
+      const map = L.map('analysisMap');
+      const polyline = L.polyline(mapPoints, { color: '#0d6efd', weight: 4, opacity: 0.8 }).addTo(map);
+      map.fitBounds(polyline.getBounds(), { padding: [20, 20] });
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap přispěvatelé'
+      }).addTo(map);
+
+      const buildChart = (ctxId, labels, datasetLabel, data, color, yTitle) => {
+        const ctx = document.getElementById(ctxId);
+        if (!ctx) return;
+        new Chart(ctx, {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: datasetLabel,
+              data,
+              borderColor: color,
+              tension: 0.2,
+              pointRadius: 0,
+              spanGaps: true
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: {
+              legend: { display: true },
+              tooltip: { enabled: true }
+            },
+            scales: {
+              x: { title: { display: true, text: labels === distanceLabels ? 'Vzdálenost (km)' : 'Čas' } },
+              y: { title: { display: true, text: yTitle } }
+            }
+          }
+        });
+      };
+
+      if (hasHeartRate) {
+        buildChart('hrChart', timeLabels, 'Tepová frekvence (bpm)', heartRate, '#dc3545', 'Heart rate (bpm)');
+      }
+      if (hasPower) {
+        buildChart('powerChart', timeLabels, 'Výkon (W)', power, '#0d6efd', 'Výkon (W)');
+      }
+      if (hasSpeed) {
+        buildChart('speedChart', timeLabels, 'Rychlost (km/h)', speed, '#20c997', 'Rychlost (km/h)');
+      }
+      if (hasElevation) {
+        buildChart('elevationChart', distanceLabels, 'Nadmořská výška (m)', elevation, '#6f42c1', 'Výška (m)');
+      }
+    </script>
+  {% endif %}
+{% endblock %}

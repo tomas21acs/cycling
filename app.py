@@ -3,14 +3,23 @@ from __future__ import annotations
 
 import csv
 import io
+import math
+import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Tuple
+import xml.etree.ElementTree as ET
 
 import gpxpy
 import gpxpy.gpx
 import numpy as np
 from flask import Flask, Response, flash, redirect, render_template, request, url_for
+
+try:
+    from fitparse import FitFile
+except ImportError:  # pragma: no cover - dependency should be installed via requirements
+    FitFile = None  # type: ignore[assignment]
 
 app = Flask(__name__)
 app.secret_key = "dev-secret"  # In production use a proper secret key
@@ -105,6 +114,44 @@ class CalculationResult:
     warning: Optional[str] = None
 
 
+@dataclass
+class ActivityPoint:
+    """Represents a single data point from a workout file."""
+
+    time: Optional[datetime]
+    lat: Optional[float]
+    lon: Optional[float]
+    ele: Optional[float]
+    heart_rate: Optional[float]
+    power: Optional[float]
+    speed: Optional[float]
+
+
+@dataclass
+class ActivitySummaryDisplay:
+    total_time: str
+    distance_km: str
+    elevation_gain: str
+    elevation_loss: str
+    avg_speed: str
+    max_speed: str
+    avg_hr: str
+    max_hr: str
+    avg_power: str
+    max_power: str
+
+
+@dataclass
+class ActivityAnalysisData:
+    summary: ActivitySummaryDisplay
+    map_points: List[List[float]]
+    charts: Dict[str, List[Optional[float]]]
+    has_heart_rate: bool
+    has_power: bool
+    has_speed: bool
+    has_elevation: bool
+
+
 # --- Utility functions ---------------------------------------------------------
 
 def format_time(seconds: float) -> str:
@@ -132,6 +179,67 @@ def moving_average(data: Iterable[float], window: int) -> np.ndarray:
     kernel = np.ones(window) / window
     smoothed = np.convolve(padded, kernel, mode="valid")
     return smoothed
+
+
+def parse_iso8601(value: Optional[str]) -> Optional[datetime]:
+    """Parse ISO 8601 timestamps from TCX/FIT files into timezone-aware datetimes."""
+
+    if not value:
+        return None
+    text = value.strip()
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        return datetime.fromisoformat(text)
+    except ValueError:
+        for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ"):
+            try:
+                return datetime.strptime(text, fmt).replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+    return None
+
+
+def to_utc(dt: datetime) -> datetime:
+    """Normalise datetime to UTC for safe subtraction."""
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _safe_float(value: Optional[str]) -> Optional[float]:
+    """Convert text to float when possible."""
+
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_text_with_suffix(element: ET.Element, suffix: str) -> Optional[str]:
+    """Search for the first descendant tag ending with the provided suffix."""
+
+    suffix_lower = suffix.lower()
+    for child in element.iter():
+        if child.tag.lower().endswith(suffix_lower) and child.text:
+            return child.text
+    return None
+
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Return great-circle distance between two WGS84 coordinates in meters."""
+
+    radius = 6371000.0  # Earth radius in meters
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    a = math.sin(d_phi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return radius * c
 
 
 def rpe_to_power(rpe: int, ftp: float) -> float:
@@ -198,6 +306,229 @@ def parse_gpx(gpx_content: str) -> List[GPXPoint]:
         for lat, lon, ele, dist in zip(lats, lons, smoothed_elev, distances)
     ]
     return points
+
+
+def parse_tcx_workout(content: bytes) -> List[ActivityPoint]:
+    """Parse a TCX workout file and extract activity points."""
+
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError as exc:
+        raise ValueError("Soubor se nepodařilo načíst jako TCX.") from exc
+
+    points: List[ActivityPoint] = []
+    for tp in root.iter():
+        if not tp.tag.lower().endswith("trackpoint"):
+            continue
+        time_text = _find_text_with_suffix(tp, "Time")
+        lat = _safe_float(_find_text_with_suffix(tp, "LatitudeDegrees"))
+        lon = _safe_float(_find_text_with_suffix(tp, "LongitudeDegrees"))
+        ele = _safe_float(_find_text_with_suffix(tp, "AltitudeMeters"))
+
+        hr_value = None
+        for child in tp.iter():
+            if child.tag.lower().endswith("heartratebpm"):
+                hr_value = _find_text_with_suffix(child, "Value") or child.text
+                break
+
+        point = ActivityPoint(
+            time=parse_iso8601(time_text),
+            lat=lat,
+            lon=lon,
+            ele=ele,
+            heart_rate=_safe_float(hr_value),
+            power=_safe_float(_find_text_with_suffix(tp, "Watts")),
+            speed=_safe_float(_find_text_with_suffix(tp, "Speed")),
+        )
+
+        if not any(
+            field is not None
+            for field in (point.time, point.lat, point.lon, point.ele, point.heart_rate, point.power, point.speed)
+        ):
+            continue
+        points.append(point)
+
+    if not points:
+        raise ValueError("Soubor neobsahuje žádná použitelná data.")
+    return points
+
+
+def parse_fit_workout(content: bytes) -> List[ActivityPoint]:
+    """Parse a FIT workout file using fitparse."""
+
+    if FitFile is None:
+        raise ValueError("Knihovna fitparse není dostupná. Zkontrolujte instalaci závislostí.")
+
+    try:
+        fit = FitFile(io.BytesIO(content))
+    except Exception as exc:  # pylint: disable=broad-except
+        raise ValueError("Soubor se nepodařilo načíst jako FIT.") from exc
+
+    points: List[ActivityPoint] = []
+    try:
+        for record in fit.get_messages("record"):
+            data = {field.name: field.value for field in record}
+            lat_raw = data.get("position_lat")
+            lon_raw = data.get("position_long")
+            lat_deg = lat_raw * (180 / 2**31) if lat_raw is not None else None
+            lon_deg = lon_raw * (180 / 2**31) if lon_raw is not None else None
+
+            point = ActivityPoint(
+                time=data.get("timestamp"),
+                lat=lat_deg,
+                lon=lon_deg,
+                ele=data.get("altitude"),
+                heart_rate=data.get("heart_rate"),
+                power=data.get("power"),
+                speed=data.get("speed"),
+            )
+
+            if not any(
+                field is not None
+                for field in (point.time, point.lat, point.lon, point.ele, point.heart_rate, point.power, point.speed)
+            ):
+                continue
+            points.append(point)
+    except Exception as exc:  # pylint: disable=broad-except
+        raise ValueError("Během čtení FIT souboru došlo k chybě.") from exc
+
+    if not points:
+        raise ValueError("Soubor neobsahuje žádná použitelná data.")
+    return points
+
+
+def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData:
+    """Aggregate workout points into summary metrics and chart-friendly series."""
+
+    if not points:
+        raise ValueError("Soubor neobsahuje žádná data.")
+
+    map_points = [
+        (p.lat, p.lon)
+        for p in points
+        if p.lat is not None and p.lon is not None
+    ]
+    if len(map_points) < 2:
+        raise ValueError("Soubor neobsahuje polohu.")
+
+    total_distance = 0.0
+    total_ascent = 0.0
+    total_descent = 0.0
+    cumulative_distances = [0.0]
+
+    heart_rate_values: List[float] = []
+    power_values: List[float] = []
+    speed_values: List[float] = []
+    elevation_values: List[float] = []
+
+    hr_series: List[Optional[float]] = []
+    power_series: List[Optional[float]] = []
+    speed_series: List[Optional[float]] = []
+    elevation_series: List[Optional[float]] = []
+
+    start_time = next((p.time for p in points if p.time is not None), None)
+    elapsed_seconds: List[float] = []
+    last_elapsed = 0.0
+
+    if start_time is not None:
+        start_time_utc = to_utc(start_time)
+        for point in points:
+            if point.time is not None:
+                last_elapsed = max(0.0, (to_utc(point.time) - start_time_utc).total_seconds())
+            elapsed_seconds.append(last_elapsed)
+    else:
+        for idx, _ in enumerate(points):
+            elapsed_seconds.append(float(idx))
+
+    prev_point = points[0]
+    for point in points[1:]:
+        dist = 0.0
+        if (
+            prev_point.lat is not None
+            and prev_point.lon is not None
+            and point.lat is not None
+            and point.lon is not None
+        ):
+            dist = haversine_distance(prev_point.lat, prev_point.lon, point.lat, point.lon)
+        total_distance += dist
+        cumulative_distances.append(total_distance)
+
+        if prev_point.ele is not None and point.ele is not None:
+            delta_ele = point.ele - prev_point.ele
+            if delta_ele > 0:
+                total_ascent += delta_ele
+            elif delta_ele < 0:
+                total_descent += abs(delta_ele)
+
+        prev_point = point
+
+    for idx, point in enumerate(points):
+        hr_value = float(point.heart_rate) if point.heart_rate is not None else None
+        power_value = float(point.power) if point.power is not None else None
+        speed_value = float(point.speed) * 3.6 if point.speed is not None else None
+        elevation_value = float(point.ele) if point.ele is not None else None
+
+        hr_series.append(hr_value)
+        power_series.append(power_value)
+        speed_series.append(speed_value)
+        elevation_series.append(elevation_value)
+
+        if hr_value is not None:
+            heart_rate_values.append(hr_value)
+        if power_value is not None:
+            power_values.append(power_value)
+        if speed_value is not None:
+            speed_values.append(speed_value)
+        if elevation_value is not None:
+            elevation_values.append(elevation_value)
+
+        if len(cumulative_distances) <= idx:
+            cumulative_distances.append(cumulative_distances[-1])
+
+    total_time_seconds = elapsed_seconds[-1] if elapsed_seconds else 0.0
+    total_distance_km = total_distance / 1000.0
+
+    avg_speed = (total_distance / total_time_seconds * 3.6) if total_time_seconds > 0 else None
+    max_speed = max(speed_values) if speed_values else None
+    avg_hr = sum(heart_rate_values) / len(heart_rate_values) if heart_rate_values else None
+    max_hr = max(heart_rate_values) if heart_rate_values else None
+    avg_power = sum(power_values) / len(power_values) if power_values else None
+    max_power = max(power_values) if power_values else None
+
+    elevation_gain_str = f"{total_ascent:.0f}" if elevation_values else "—"
+    elevation_loss_str = f"{total_descent:.0f}" if elevation_values else "—"
+
+    summary = ActivitySummaryDisplay(
+        total_time=format_time(total_time_seconds) if total_time_seconds > 0 else "—",
+        distance_km=f"{total_distance_km:.1f}",
+        elevation_gain=elevation_gain_str,
+        elevation_loss=elevation_loss_str,
+        avg_speed=f"{avg_speed:.1f}" if avg_speed is not None else "—",
+        max_speed=f"{max_speed:.1f}" if max_speed is not None else "—",
+        avg_hr=f"{avg_hr:.0f}" if avg_hr is not None else "—",
+        max_hr=f"{max_hr:.0f}" if max_hr is not None else "—",
+        avg_power=f"{avg_power:.0f}" if avg_power is not None else "—",
+        max_power=f"{max_power:.0f}" if max_power is not None else "—",
+    )
+
+    charts = {
+        "time_labels": [format_time(seconds) for seconds in elapsed_seconds],
+        "distance_labels": [round(distance / 1000.0, 3) for distance in cumulative_distances],
+        "heart_rate": hr_series,
+        "power": power_series,
+        "speed": speed_series,
+        "elevation": elevation_series,
+    }
+
+    return ActivityAnalysisData(
+        summary=summary,
+        map_points=[[float(lat), float(lon)] for lat, lon in map_points],
+        charts=charts,
+        has_heart_rate=any(value is not None for value in hr_series),
+        has_power=any(value is not None for value in power_series),
+        has_speed=any(value is not None for value in speed_series),
+        has_elevation=any(value is not None for value in elevation_series),
+    )
 
 
 def build_legs(points: List[GPXPoint]) -> Tuple[List[TrackLeg], float, float]:
@@ -519,8 +850,13 @@ def validate_inputs(form: Dict[str, str]) -> List[str]:
     return errors
 
 
-@app.route("/", methods=["GET", "POST"])
-def index() -> str:
+@app.route("/")
+def hero() -> str:
+    return render_template("hero.html")
+
+
+@app.route("/calculator", methods=["GET", "POST"])
+def calculator() -> str:
     errors: List[str] = []
     results: Optional[CalculationResult] = None
     form_defaults = {
@@ -583,11 +919,45 @@ def index() -> str:
     )
 
 
+@app.route("/analysis", methods=["GET", "POST"])
+def analysis() -> str:
+    errors: List[str] = []
+    activity: Optional[ActivityAnalysisData] = None
+
+    if request.method == "POST":
+        upload = request.files.get("workout")
+        if not upload or upload.filename == "":
+            errors.append("Musíte nahrát TCX nebo FIT soubor.")
+        else:
+            file_bytes = upload.read()
+            if not file_bytes:
+                errors.append("Soubor je prázdný.")
+            else:
+                _, ext = os.path.splitext(upload.filename.lower())
+                points: Optional[List[ActivityPoint]] = None
+                try:
+                    if ext == ".tcx":
+                        points = parse_tcx_workout(file_bytes)
+                    elif ext == ".fit":
+                        points = parse_fit_workout(file_bytes)
+                    else:
+                        errors.append("Nepodporovaný formát. Nahrajte TCX nebo FIT soubor.")
+                    if points is not None and not errors:
+                        activity = build_activity_analysis(points)
+                except ValueError as exc:
+                    errors.append(str(exc))
+                except Exception as exc:  # pylint: disable=broad-except
+                    errors.append("Během zpracování došlo k chybě.")
+                    app.logger.exception("Chyba při analýze tréninku", exc_info=exc)
+
+    return render_template("analysis.html", errors=errors, analysis=activity)
+
+
 @app.route("/export.csv")
 def export_csv() -> Response:
     if not LAST_CSV_ROWS:
         flash("Nejsou dostupná žádná data k exportu.")
-        return redirect(url_for("index"))
+        return redirect(url_for("calculator"))
 
     output = io.StringIO()
     writer = csv.DictWriter(

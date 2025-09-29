@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="hero-section">
+    <div class="row w-100 justify-content-center g-4">
+      <div class="col-12 text-center mb-4">
+        <h1 class="display-5 fw-bold">Cyklistické nástroje</h1>
+        <p class="lead text-muted">Vyberte si, co chcete dělat – plánujte výkon nebo analyzujte hotový trénink.</p>
+      </div>
+      <div class="col-12 col-md-5">
+        <a class="text-decoration-none" href="{{ url_for('calculator') }}">
+          <div class="card hero-card h-100 shadow-sm">
+            <div class="card-body py-5 text-center">
+              <h2 class="h3 mb-3">Kalkulačka výkonu</h2>
+              <p class="text-muted mb-0">Fyzikální model výkonu a rychlosti nad GPX trasou. Zadejte parametry, získejte pacing.</p>
+            </div>
+          </div>
+        </a>
+      </div>
+      <div class="col-12 col-md-5">
+        <a class="text-decoration-none" href="{{ url_for('analysis') }}">
+          <div class="card hero-card h-100 shadow-sm">
+            <div class="card-body py-5 text-center">
+              <h2 class="h3 mb-3">Analýza tréninku</h2>
+              <p class="text-muted mb-0">Nahrajte TCX nebo FIT soubor, zobrazte mapu, statistiky a grafy výkonu, tepu i rychlosti.</p>
+            </div>
+          </div>
+        </a>
+      </div>
+    </div>
+  </section>
+{% endblock %}
