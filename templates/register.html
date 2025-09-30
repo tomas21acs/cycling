@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="row justify-content-center">
+    <div class="col-12 col-md-6 col-lg-5">
+      <div class="card shadow-sm">
+        <div class="card-body p-4">
+          <h1 class="h3 mb-3">Registrace</h1>
+          <form method="post" novalidate>
+            {{ form.hidden_tag() }}
+            <div class="mb-3">
+              {{ form.username.label(class="form-label") }}
+              {{ form.username(class="form-control", placeholder="Přezdívka") }}
+              {% for error in form.username.errors %}
+                <div class="text-danger small">{{ error }}</div>
+              {% endfor %}
+            </div>
+            <div class="mb-3">
+              {{ form.email.label(class="form-label") }}
+              {{ form.email(class="form-control", placeholder="vas@email.cz") }}
+              {% for error in form.email.errors %}
+                <div class="text-danger small">{{ error }}</div>
+              {% endfor %}
+            </div>
+            <div class="mb-3">
+              {{ form.password.label(class="form-label") }}
+              {{ form.password(class="form-control", placeholder="Min. 6 znaků") }}
+              {% for error in form.password.errors %}
+                <div class="text-danger small">{{ error }}</div>
+              {% endfor %}
+            </div>
+            <div class="d-grid gap-2">
+              {{ form.submit(class="btn btn-primary") }}
+            </div>
+          </form>
+          <p class="mt-3 mb-0 text-muted">Máte účet? <a href="{{ url_for('login') }}">Přihlaste se</a>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

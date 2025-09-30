@@ -1,9 +1,9 @@
 # Cycling Power & Training Tools
 
-Jednoduchá Flask aplikace, která nabízí dvě hlavní funkce:
+Flask aplikace pro cyklisty, která kombinuje plánování výkonu i detailní analýzu reálných jízd.
 
 1. **Kalkulačka výkonu / pacingu** – výpočet výkonu a rychlosti podle GPX trasy.
-2. **Analýza tréninku** – vizualizace a souhrny z TCX/FIT souborů.
+2. **Analýza tréninku** – výpočet pokročilých metrik z TCX/FIT a uložení do historie uživatele.
 
 ## Instalace
 ```bash
@@ -23,10 +23,16 @@ Aplikace poběží na http://localhost:5000.
 - **Cílové RPE** – uživatel zadá subjektivní úroveň námahy (RPE 1–10), která se přepočítá na procento FTP a výsledný výkon. Aplikace následně najde dosažitelnou rychlost pro každý segment pomocí numerického řešení.
 - Výstup zahrnuje tabulku segmentů, souhrnné statistiky, grafy výkonu/rychlosti/sklonu a možnost exportu CSV.
 
-## Analýza tréninku
-- Nahrajte TCX nebo FIT soubor – aplikace automaticky rozpozná formát.
-- Výstup obsahuje mapu trasy (Leaflet), souhrnné statistiky (délka, čas, převýšení, průměrné/max hodnoty) a grafy pro tep, výkon, rychlost a nadmořskou výšku (Chart.js).
-- Pokud data v souboru chybí (např. bez výkonu), aplikace daný graf vynechá a zobrazí informativní hlášku.
+## Analýza tréninku & historie
+- Po přihlášení lze nahrát TCX nebo FIT soubor (volitelně zadat FTP a název). Backend spočítá základní statistiky, pokročilé metriky (Normalized Power, IF, TSS, VI, kalorie) a uloží výsledek do SQLite databáze.
+- Detaily tréninku zobrazují mapu trasy (Leaflet), souhrnné tabulky a čtyři grafy (Chart.js) – tep, výkon, rychlost a nadmořskou výšku.
+- Každý uživatel má vlastní historii jízd s přehledovou tabulkou (datum, vzdálenost, TSS, NP, IF) a odkazem na detail.
+- Pokud soubor neobsahuje potřebné datové kanály (např. GPS), aplikace uživatele informuje a trénink se neuloží.
+
+## Uživatelské účty
+- Registrace a přihlášení (Flask-Login + Flask-WTF, hesla hashována přes bcrypt).
+- Každý uživatel vidí pouze své uložené tréninky.
+- Nahrané soubory jsou uloženy v `instance/uploads/` a slouží k opětovnému zobrazení detailu.
 
 ## Výchozí fyzikální konstanty
 - Hustota vzduchu `rho = 1.225 kg/m³`
@@ -34,5 +40,5 @@ Aplikace poběží na http://localhost:5000.
 - Koeficient valivého odporu `Crr = 0.004`
 
 ## Poznámky
-- Mapování RPE → %FTP je orientační. Hodnoty lze upravit v souboru `app.py` v sekci konstant.
-- Analytické funkce využívají knihovnu `fitparse` pro FIT soubory a jednoduché zpracování TCX přes `xml.etree.ElementTree`.
+- Mapování RPE → %FTP je orientační a lze jej upravit v souboru `app.py` v sekci konstant.
+- Pro korektní běh analýzy FIT souborů je nutné mít nainstalovánu závislost `fitparse` (viz `requirements.txt`).

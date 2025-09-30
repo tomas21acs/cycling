@@ -40,3 +40,7 @@ body {
     border-radius: 0.5rem;
     overflow: hidden;
 }
+
+.flash-container {
+    margin-bottom: 1.5rem;
+}

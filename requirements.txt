@@ -2,3 +2,8 @@ Flask
 numpy
 gpxpy
 fitparse
+Flask-WTF
+Flask-Login
+Flask-SQLAlchemy
+email-validator
+bcrypt

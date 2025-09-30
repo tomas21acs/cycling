@@ -7,6 +7,7 @@ import math
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, Iterable, List, Optional, Tuple
 import xml.etree.ElementTree as ET
@@ -14,7 +15,21 @@ import xml.etree.ElementTree as ET
 import gpxpy
 import gpxpy.gpx
 import numpy as np
-from flask import Flask, Response, flash, redirect, render_template, request, url_for
+from flask import Flask, Response, abort, flash, redirect, render_template, request, url_for
+from flask_login import (
+    LoginManager,
+    current_user,
+    login_required,
+    login_user,
+    logout_user,
+)
+from flask_wtf import CSRFProtect
+import bcrypt
+from werkzeug.utils import secure_filename
+from sqlalchemy.exc import IntegrityError
+
+from forms import LoginForm, RegisterForm
+from models import Training, User, db
 
 try:
     from fitparse import FitFile
@@ -23,6 +38,32 @@ except ImportError:  # pragma: no cover - dependency should be installed via req
 
 app = Flask(__name__)
 app.secret_key = "dev-secret"  # In production use a proper secret key
+app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///cycling.db"
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+db.init_app(app)
+login_manager = LoginManager(app)
+login_manager.login_view = "login"
+csrf = CSRFProtect(app)
+
+# Ensure upload directory exists in the Flask instance folder.
+UPLOAD_FOLDER = Path(app.instance_path) / "uploads"
+UPLOAD_FOLDER.mkdir(parents=True, exist_ok=True)
+
+
+@login_manager.user_loader
+def load_user(user_id: str) -> Optional[User]:
+    """Return the authenticated user for Flask-Login."""
+
+    if user_id and user_id.isdigit():
+        return db.session.get(User, int(user_id))
+    return None
+
+
+with app.app_context():
+    db.create_all()
+
+app.jinja_env.globals.update(format_time=format_time, format_hhmmss=format_hhmmss)
 
 # --- Constants -----------------------------------------------------------------
 SEGMENT_LENGTH_METERS = 200.0
@@ -139,10 +180,16 @@ class ActivitySummaryDisplay:
     max_hr: str
     avg_power: str
     max_power: str
+    normalized_power: str
+    intensity_factor: str
+    training_stress_score: str
+    calories: str
+    variability_index: str
 
 
 @dataclass
 class ActivityAnalysisData:
+    stats: "ActivityStats"
     summary: ActivitySummaryDisplay
     coords: List[List[float]]
     time_labels: List[str]
@@ -152,6 +199,25 @@ class ActivityAnalysisData:
     speed_values: List[Optional[float]]
     elev_values: List[Optional[float]]
 
+
+@dataclass
+class ActivityStats:
+    start_time: Optional[datetime]
+    total_seconds: float
+    distance_km: float
+    elevation_gain: float
+    elevation_loss: float
+    avg_speed: Optional[float]
+    max_speed: Optional[float]
+    avg_hr: Optional[float]
+    max_hr: Optional[float]
+    avg_power: Optional[float]
+    max_power: Optional[float]
+    normalized_power: Optional[float]
+    intensity_factor: Optional[float]
+    training_stress_score: Optional[float]
+    calories: float
+    variability_index: Optional[float]
 
 # --- Utility functions ---------------------------------------------------------
 
@@ -256,6 +322,52 @@ def rpe_to_power(rpe: int, ftp: float) -> float:
     """Map RPE (1-10) to target power using predefined %FTP mapping."""
 
     return ftp * RPE_TO_PERCENT.get(rpe, 1.0)
+
+
+def compute_normalized_power(power_time_pairs: List[Tuple[float, float]]) -> Optional[float]:
+    """Calculate Normalized Power from (time, power) samples."""
+
+    if len(power_time_pairs) < 2:
+        return None
+
+    # Normalise time so that the first sample starts at zero seconds.
+    base_time = power_time_pairs[0][0]
+    times = np.array([t - base_time for t, _ in power_time_pairs], dtype=float)
+    powers = np.array([p for _, p in power_time_pairs], dtype=float)
+
+    if times[-1] <= 0:
+        return None
+
+    # Resample to 1-second resolution using linear interpolation to create
+    # a smooth time series that the 30-second rolling mean can be applied to.
+    seconds = np.arange(0, math.ceil(times[-1]) + 1, dtype=float)
+    interpolated = np.interp(seconds, times, powers)
+
+    window = 30
+    if len(interpolated) < window:
+        rolling = np.array([interpolated.mean()])
+    else:
+        kernel = np.ones(window) / window
+        rolling = np.convolve(interpolated, kernel, mode="valid")
+
+    fourth_power_mean = np.mean(np.power(rolling, 4))
+    return float(fourth_power_mean ** 0.25) if fourth_power_mean > 0 else None
+
+
+def compute_work_joules(power_time_pairs: List[Tuple[float, float]]) -> float:
+    """Integrate power over time to get total work in joules."""
+
+    if len(power_time_pairs) < 2:
+        return 0.0
+
+    work = 0.0
+    for (t0, p0), (t1, p1) in zip(power_time_pairs[:-1], power_time_pairs[1:]):
+        delta_t = max(0.0, t1 - t0)
+        if delta_t == 0:
+            continue
+        # Use trapezoidal rule with average power between the two samples.
+        work += (p0 + p1) / 2.0 * delta_t
+    return work
 
 
 def parse_gpx(gpx_content: str) -> List[GPXPoint]:
@@ -407,7 +519,7 @@ def parse_fit_workout(content: bytes) -> List[ActivityPoint]:
     return points
 
 
-def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData:
+def build_activity_analysis(points: List[ActivityPoint], ftp: float = 250.0) -> ActivityAnalysisData:
     """Aggregate workout points into summary metrics and chart-friendly series."""
 
     if not points:
@@ -430,6 +542,7 @@ def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData
     power_values: List[float] = []
     speed_values: List[float] = []
     elevation_values: List[float] = []
+    power_time_pairs: List[Tuple[float, float]] = []
 
     hr_series: List[Optional[float]] = []
     power_series: List[Optional[float]] = []
@@ -487,6 +600,7 @@ def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData
             heart_rate_values.append(hr_value)
         if power_value is not None:
             power_values.append(power_value)
+            power_time_pairs.append((elapsed_seconds[idx], power_value))
         if speed_value is not None:
             speed_values.append(speed_value)
         if elevation_value is not None:
@@ -505,6 +619,17 @@ def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData
     avg_power = sum(power_values) / len(power_values) if power_values else None
     max_power = max(power_values) if power_values else None
 
+    normalized_power = compute_normalized_power(power_time_pairs) if power_time_pairs else None
+    intensity_factor = (normalized_power / ftp) if normalized_power and ftp > 0 else None
+    variability_index = (normalized_power / avg_power) if normalized_power and avg_power else None
+    total_work_j = compute_work_joules(power_time_pairs) if power_time_pairs else 0.0
+    calories = total_work_j * 0.000239
+    training_stress_score = None
+    if normalized_power and intensity_factor and ftp > 0 and total_time_seconds > 0:
+        training_stress_score = (
+            (total_time_seconds * normalized_power * intensity_factor) / (ftp * 3600.0) * 100.0
+        )
+
     elevation_gain_str = f"{total_ascent:.0f}" if elevation_values else "—"
     elevation_loss_str = f"{total_descent:.0f}" if elevation_values else "—"
 
@@ -519,9 +644,34 @@ def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData
         max_hr=f"{max_hr:.0f}" if max_hr is not None else "—",
         avg_power=f"{avg_power:.0f}" if avg_power is not None else "—",
         max_power=f"{max_power:.0f}" if max_power is not None else "—",
+        normalized_power=f"{normalized_power:.0f}" if normalized_power is not None else "—",
+        intensity_factor=f"{intensity_factor:.2f}" if intensity_factor is not None else "—",
+        training_stress_score=f"{training_stress_score:.0f}" if training_stress_score is not None else "—",
+        calories=f"{calories:.0f}",
+        variability_index=f"{variability_index:.2f}" if variability_index is not None else "—",
+    )
+
+    stats = ActivityStats(
+        start_time=start_time,
+        total_seconds=total_time_seconds,
+        distance_km=total_distance_km,
+        elevation_gain=total_ascent,
+        elevation_loss=total_descent,
+        avg_speed=avg_speed,
+        max_speed=max_speed,
+        avg_hr=avg_hr,
+        max_hr=max_hr,
+        avg_power=avg_power,
+        max_power=max_power,
+        normalized_power=normalized_power,
+        intensity_factor=intensity_factor,
+        training_stress_score=training_stress_score,
+        calories=calories,
+        variability_index=variability_index,
     )
 
     return ActivityAnalysisData(
+        stats=stats,
         summary=summary,
         coords=[[float(lat), float(lon)] for lat, lon in map_points],
         time_labels=[format_hhmmss(seconds) for seconds in elapsed_seconds],
@@ -857,6 +1007,61 @@ def hero() -> str:
     return render_template("hero.html")
 
 
+@app.route("/register", methods=["GET", "POST"])
+def register() -> str:
+    if current_user.is_authenticated:
+        return redirect(url_for("hero"))
+
+    form = RegisterForm()
+    if form.validate_on_submit():
+        username = form.username.data.strip()
+        email = form.email.data.lower()
+        password = form.password.data
+        hashed = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        user = User(username=username, email=email, password_hash=hashed)
+        db.session.add(user)
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            flash("Uživatel s tímto e-mailem nebo jménem již existuje.", "danger")
+        else:
+            login_user(user)
+            flash("Registrace proběhla úspěšně.", "success")
+            return redirect(url_for("hero"))
+
+    return render_template("register.html", form=form)
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login() -> str:
+    if current_user.is_authenticated:
+        return redirect(url_for("hero"))
+
+    form = LoginForm()
+    if form.validate_on_submit():
+        email = form.email.data.lower()
+        user = User.query.filter_by(email=email).first()
+        if user and bcrypt.checkpw(
+            form.password.data.encode("utf-8"), user.password_hash.encode("utf-8")
+        ):
+            login_user(user)
+            flash("Přihlášení proběhlo úspěšně.", "success")
+            next_url = request.args.get("next")
+            return redirect(next_url or url_for("hero"))
+        flash("Neplatné přihlašovací údaje.", "danger")
+
+    return render_template("login.html", form=form)
+
+
+@app.route("/logout")
+@login_required
+def logout() -> Response:
+    logout_user()
+    flash("Byli jste odhlášeni.", "info")
+    return redirect(url_for("hero"))
+
+
 @app.route("/calculator", methods=["GET", "POST"])
 def calculator() -> str:
     errors: List[str] = []
@@ -922,20 +1127,34 @@ def calculator() -> str:
 
 
 @app.route("/analysis", methods=["GET", "POST"])
+@login_required
 def analysis() -> str:
     errors: List[str] = []
-    activity: Optional[ActivityAnalysisData] = None
+    ftp_default = request.form.get("ftp", "")
+    title_default = request.form.get("title", "")
 
     if request.method == "POST":
         upload = request.files.get("workout")
+        ftp_text = request.form.get("ftp", "")
+        title = request.form.get("title", "").strip()
+        ftp_value: Optional[float] = None
+
+        try:
+            ftp_value = float(ftp_text) if ftp_text else 250.0
+            if ftp_value <= 0:
+                raise ValueError
+        except ValueError:
+            errors.append("FTP musí být kladné číslo.")
+
         if not upload or upload.filename == "":
             errors.append("Musíte nahrát TCX nebo FIT soubor.")
-        else:
+
+        if not errors and upload and ftp_value is not None:
             file_bytes = upload.read()
             if not file_bytes:
                 errors.append("Soubor je prázdný.")
             else:
-                _, ext = os.path.splitext(upload.filename.lower())
+                ext = os.path.splitext(upload.filename.lower())[-1]
                 points: Optional[List[ActivityPoint]] = None
                 try:
                     if ext == ".tcx":
@@ -944,15 +1163,117 @@ def analysis() -> str:
                         points = parse_fit_workout(file_bytes)
                     else:
                         errors.append("Nepodporovaný formát. Nahrajte TCX nebo FIT soubor.")
+
                     if points is not None and not errors:
-                        activity = build_activity_analysis(points)
+                        activity = build_activity_analysis(points, ftp=ftp_value)
+                        activity_start = activity.stats.start_time
+                        if activity_start is not None:
+                            activity_start = to_utc(activity_start).replace(tzinfo=None)
+                        else:
+                            activity_start = datetime.utcnow()
+                        default_title = f"Trénink {activity_start.strftime('%Y-%m-%d %H:%M')}"
+                        safe_title = title or default_title
+
+                        filename = secure_filename(upload.filename or "training.tcx")
+                        if not filename:
+                            filename = f"training{ext or '.tcx'}"
+                        timestamp = datetime.utcnow().strftime("%Y%m%d%H%M%S")
+                        storage_path = UPLOAD_FOLDER / f"{timestamp}_{filename}"
+                        storage_path.write_bytes(file_bytes)
+
+                        training = Training(
+                            user=current_user,
+                            date=activity_start,
+                            title=safe_title,
+                            distance=activity.stats.distance_km,
+                            duration=activity.stats.total_seconds,
+                            elevation=activity.stats.elevation_gain,
+                            elevation_loss=activity.stats.elevation_loss,
+                            avg_speed=activity.stats.avg_speed,
+                            max_speed=activity.stats.max_speed,
+                            avg_hr=activity.stats.avg_hr,
+                            max_hr=activity.stats.max_hr,
+                            avg_power=activity.stats.avg_power,
+                            max_power=activity.stats.max_power,
+                            normalized_power=activity.stats.normalized_power,
+                            intensity_factor=activity.stats.intensity_factor,
+                            training_stress_score=activity.stats.training_stress_score,
+                            variability_index=activity.stats.variability_index,
+                            calories=activity.stats.calories,
+                            ftp_used=ftp_value,
+                            file_path=str(storage_path),
+                        )
+                        db.session.add(training)
+                        db.session.commit()
+                        flash("Trénink byl úspěšně analyzován a uložen.", "success")
+                        return redirect(url_for("training_detail", training_id=training.id))
                 except ValueError as exc:
+                    db.session.rollback()
                     errors.append(str(exc))
                 except Exception as exc:  # pylint: disable=broad-except
+                    db.session.rollback()
                     errors.append("Během zpracování došlo k chybě.")
                     app.logger.exception("Chyba při analýze tréninku", exc_info=exc)
 
-    return render_template("analysis.html", errors=errors, analysis=activity)
+    return render_template(
+        "analysis.html",
+        errors=errors,
+        ftp_value=ftp_default,
+        title_value=title_default,
+    )
+
+
+@app.route("/history")
+@login_required
+def history() -> str:
+    trainings = (
+        Training.query.filter_by(user_id=current_user.id)
+        .order_by(Training.date.desc())
+        .all()
+    )
+    return render_template("history.html", trainings=trainings)
+
+
+@app.route("/training/<int:training_id>")
+@login_required
+def training_detail(training_id: int) -> str:
+    training = Training.query.filter_by(id=training_id, user_id=current_user.id).first()
+    if training is None:
+        abort(404)
+
+    file_path = Path(training.file_path)
+    if not file_path.exists():
+        flash("Původní soubor se nepodařilo najít.", "warning")
+        return redirect(url_for("history"))
+
+    file_bytes = file_path.read_bytes()
+    ext = file_path.suffix.lower()
+    points: Optional[List[ActivityPoint]] = None
+    try:
+        if ext == ".tcx":
+            points = parse_tcx_workout(file_bytes)
+        elif ext == ".fit":
+            points = parse_fit_workout(file_bytes)
+        else:
+            flash("Formát souboru již není podporován.", "danger")
+            return redirect(url_for("history"))
+    except ValueError as exc:
+        flash(str(exc), "danger")
+        return redirect(url_for("history"))
+
+    if not points:
+        flash("Soubor neobsahuje žádná data.", "danger")
+        return redirect(url_for("history"))
+
+    ftp_value = training.ftp_used or 250.0
+    analysis_data = build_activity_analysis(points, ftp=ftp_value)
+
+    return render_template(
+        "training_detail.html",
+        training=training,
+        analysis=analysis_data,
+        ftp=ftp_value,
+    )
 
 
 @app.route("/export.csv")
