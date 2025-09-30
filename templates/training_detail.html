@@ -12,7 +12,7 @@
         <h1 class="h3 mb-1">{{ training.title }}</h1>
         <p class="text-muted mb-0">{{ training.date.strftime('%d.%m.%Y %H:%M') }} · FTP při analýze: {{ ftp|round(0) }} W</p>
       </div>
-      <a class="btn btn-outline-secondary" href="{{ url_for('history') }}">← Zpět do historie</a>
+      <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">← Zpět na dashboard</a>
     </div>
   </div>
 

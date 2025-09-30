@@ -29,11 +29,11 @@
       </div>
       {% if current_user.is_authenticated %}
         <div class="col-12 col-md-5">
-          <a class="text-decoration-none" href="{{ url_for('history') }}">
+          <a class="text-decoration-none" href="{{ url_for('dashboard') }}">
             <div class="card hero-card h-100 shadow-sm">
               <div class="card-body py-5 text-center">
-                <h2 class="h3 mb-3">Moje historie</h2>
-                <p class="text-muted mb-0">Procházejte uložené jízdy, porovnávejte metriky a otevřete detail s mapou i grafy.</p>
+                <h2 class="h3 mb-3">Dashboard</h2>
+                <p class="text-muted mb-0">Kalendář aktivit, týdenní souhrny a metriky formy ve stylu TrainingPeaks.</p>
               </div>
             </div>
           </a>

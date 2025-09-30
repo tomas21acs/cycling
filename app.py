@@ -5,11 +5,12 @@ import csv
 import io
 import math
 import os
+from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 import xml.etree.ElementTree as ET
 
 import gpxpy
@@ -256,6 +257,104 @@ def moving_average(data: Iterable[float], window: int) -> np.ndarray:
     kernel = np.ones(window) / window
     smoothed = np.convolve(padded, kernel, mode="valid")
     return smoothed
+
+
+def iso_week_start(dt: datetime) -> date:
+    """Return the Monday date for the ISO week of the provided datetime."""
+
+    iso_weekday = dt.isoweekday()
+    return dt.date() - timedelta(days=iso_weekday - 1)
+
+
+def build_weekly_summaries(trainings: Iterable[Training]) -> List[Dict[str, str]]:
+    """Aggregate total time, distance, and TSS per ISO week."""
+
+    weekly: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    for training in trainings:
+        if training.date is None:
+            continue
+        iso_year, iso_week, _ = training.date.isocalendar()
+        week_start = iso_week_start(training.date)
+        bucket = weekly.setdefault(
+            (iso_year, iso_week),
+            {"seconds": 0.0, "distance": 0.0, "tss": 0.0, "start": week_start},
+        )
+        bucket["seconds"] += float(training.duration or 0.0)
+        bucket["distance"] += float(training.distance or 0.0)
+        bucket["tss"] += float(training.training_stress_score or 0.0)
+
+    summaries: List[Dict[str, str]] = []
+    for data in sorted(weekly.values(), key=lambda item: item["start"], reverse=True):
+        start_date = data["start"]
+        end_date = start_date + timedelta(days=6)
+        summaries.append(
+            {
+                "label": f"{start_date.strftime('%d.%m.%Y')} – {end_date.strftime('%d.%m.%Y')}",
+                "time": format_hhmmss(data["seconds"]),
+                "distance": f"{data['distance']:.1f}",
+                "tss": f"{data['tss']:.0f}",
+            }
+        )
+
+    return summaries
+
+
+def build_calendar_events(trainings: Iterable[Training]) -> List[Dict[str, object]]:
+    """Prepare FullCalendar event structures for the user's trainings."""
+
+    events: List[Dict[str, object]] = []
+    for training in trainings:
+        if training.date is None:
+            continue
+        distance = float(training.distance or 0.0)
+        tss = float(training.training_stress_score or 0.0)
+        title = training.title or "Trénink"
+        events.append(
+            {
+                "id": training.id,
+                "title": f"{title} ({distance:.1f} km, TSS {tss:.0f})",
+                "start": training.date.isoformat(),
+                "url": url_for("training_detail", training_id=training.id),
+            }
+        )
+    return events
+
+
+def build_performance_series(trainings: Iterable[Training]) -> Dict[str, List[float]]:
+    """Compute CTL/ATL/TSB daily series using the Banister model."""
+
+    dated_trainings = [t for t in trainings if t.date is not None]
+    if not dated_trainings:
+        return {"labels": [], "ctl": [], "atl": [], "tsb": []}
+
+    dated_trainings.sort(key=lambda tr: tr.date)
+    daily_tss: Dict[date, float] = defaultdict(float)
+    for training in dated_trainings:
+        training_date = training.date.date()
+        daily_tss[training_date] += float(training.training_stress_score or 0.0)
+
+    start_date = dated_trainings[0].date.date()
+    end_date = max(date.today(), dated_trainings[-1].date.date())
+
+    labels: List[str] = []
+    ctl_values: List[float] = []
+    atl_values: List[float] = []
+    tsb_values: List[float] = []
+
+    ctl = 0.0
+    atl = 0.0
+    current_day = start_date
+    while current_day <= end_date:
+        tss_today = daily_tss.get(current_day, 0.0)
+        ctl += (tss_today - ctl) / 42.0
+        atl += (tss_today - atl) / 7.0
+        labels.append(current_day.strftime("%Y-%m-%d"))
+        ctl_values.append(round(ctl, 2))
+        atl_values.append(round(atl, 2))
+        tsb_values.append(round(ctl - atl, 2))
+        current_day += timedelta(days=1)
+
+    return {"labels": labels, "ctl": ctl_values, "atl": atl_values, "tsb": tsb_values}
 
 
 def parse_iso8601(value: Optional[str]) -> Optional[datetime]:
@@ -1224,15 +1323,25 @@ def analysis() -> str:
     )
 
 
-@app.route("/history")
+@app.route("/dashboard")
 @login_required
-def history() -> str:
+def dashboard() -> str:
     trainings = (
         Training.query.filter_by(user_id=current_user.id)
-        .order_by(Training.date.desc())
+        .order_by(Training.date.asc())
         .all()
     )
-    return render_template("history.html", trainings=trainings)
+    calendar_events = build_calendar_events(trainings)
+    weekly_summaries = build_weekly_summaries(trainings)[:6]
+    performance_series = build_performance_series(trainings)
+
+    return render_template(
+        "dashboard.html",
+        trainings=trainings,
+        calendar_events=calendar_events,
+        weekly_summaries=weekly_summaries,
+        performance=performance_series,
+    )
 
 
 @app.route("/training/<int:training_id>")
@@ -1245,7 +1354,7 @@ def training_detail(training_id: int) -> str:
     file_path = Path(training.file_path)
     if not file_path.exists():
         flash("Původní soubor se nepodařilo najít.", "warning")
-        return redirect(url_for("history"))
+        return redirect(url_for("dashboard"))
 
     file_bytes = file_path.read_bytes()
     ext = file_path.suffix.lower()
@@ -1257,14 +1366,14 @@ def training_detail(training_id: int) -> str:
             points = parse_fit_workout(file_bytes)
         else:
             flash("Formát souboru již není podporován.", "danger")
-            return redirect(url_for("history"))
+            return redirect(url_for("dashboard"))
     except ValueError as exc:
         flash(str(exc), "danger")
-        return redirect(url_for("history"))
+        return redirect(url_for("dashboard"))
 
     if not points:
         flash("Soubor neobsahuje žádná data.", "danger")
-        return redirect(url_for("history"))
+        return redirect(url_for("dashboard"))
 
     ftp_value = training.ftp_used or 250.0
     analysis_data = build_activity_analysis(points, ftp=ftp_value)

@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.css" />
+{% endblock %}
+
+{% block content %}
+  <div class="row mb-4">
+    <div class="col-12 d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <h1 class="h3 mb-0">Tréninkový dashboard</h1>
+      <a class="btn btn-primary" href="{{ url_for('analysis') }}">Nová analýza</a>
+    </div>
+  </div>
+
+  {% if trainings %}
+    <div class="card shadow-sm mb-4">
+      <div class="card-body">
+        <h2 class="h4 mb-4">Kalendář aktivit</h2>
+        <div id="trainingCalendar"></div>
+      </div>
+    </div>
+
+    {% if weekly_summaries %}
+      <div class="row g-3 mb-4">
+        {% for summary in weekly_summaries %}
+          <div class="col-12 col-md-4">
+            <div class="card shadow-sm h-100">
+              <div class="card-body">
+                <p class="text-uppercase text-muted small mb-1">{{ summary.label }}</p>
+                <h3 class="h5 mb-3">Týdenní souhrn</h3>
+                <dl class="row mb-0">
+                  <dt class="col-6 small text-muted">Čas</dt>
+                  <dd class="col-6 fw-semibold">{{ summary.time }}</dd>
+                  <dt class="col-6 small text-muted">Vzdálenost</dt>
+                  <dd class="col-6 fw-semibold">{{ summary.distance }} km</dd>
+                  <dt class="col-6 small text-muted">TSS</dt>
+                  <dd class="col-6 fw-semibold">{{ summary.tss }}</dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {% if performance.labels %}
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h2 class="h4 mb-4">Fitness / Fatigue / Form</h2>
+          <canvas id="performanceChart" height="120"></canvas>
+        </div>
+      </div>
+    {% endif %}
+  {% else %}
+    <div class="alert alert-info">Zatím žádné tréninky. Nahrajte první aktivitu v sekci Analýza.</div>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.11/index.global.min.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const calendarElement = document.getElementById('trainingCalendar');
+      const calendarEvents = {{ calendar_events | tojson }};
+      if (calendarElement && calendarEvents) {
+        const calendar = new FullCalendar.Calendar(calendarElement, {
+          initialView: 'dayGridMonth',
+          height: 'auto',
+          headerToolbar: {
+            left: 'prev,next today',
+            center: 'title',
+            right: 'dayGridMonth,listWeek'
+          },
+          locale: 'cs',
+          events: calendarEvents,
+          eventClick(info) {
+            if (info.event.url) {
+              info.jsEvent.preventDefault();
+              window.location.href = info.event.url;
+            }
+          }
+        });
+        calendar.render();
+      }
+
+      const performanceLabels = {{ performance.labels | tojson }};
+      if (performanceLabels.length) {
+        const ctx = document.getElementById('performanceChart');
+        if (ctx) {
+          const ctlValues = {{ performance.ctl | tojson }};
+          const atlValues = {{ performance.atl | tojson }};
+          const tsbValues = {{ performance.tsb | tojson }};
+          new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: performanceLabels,
+              datasets: [
+                {
+                  label: 'Fitness (CTL)',
+                  data: ctlValues,
+                  borderColor: '#0d6efd',
+                  backgroundColor: 'rgba(13,110,253,0.1)',
+                  tension: 0.2,
+                  fill: false
+                },
+                {
+                  label: 'Fatigue (ATL)',
+                  data: atlValues,
+                  borderColor: '#dc3545',
+                  backgroundColor: 'rgba(220,53,69,0.1)',
+                  tension: 0.2,
+                  fill: false
+                },
+                {
+                  label: 'Form (TSB)',
+                  data: tsbValues,
+                  borderColor: '#198754',
+                  backgroundColor: 'rgba(25,135,84,0.1)',
+                  tension: 0.2,
+                  fill: false
+                }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: {
+                  display: true,
+                  position: 'bottom'
+                },
+                tooltip: {
+                  mode: 'index',
+                  intersect: false
+                }
+              },
+              scales: {
+                x: {
+                  title: {
+                    display: true,
+                    text: 'Datum'
+                  }
+                },
+                y: {
+                  title: {
+                    display: true,
+                    text: 'Hodnota'
+                  }
+                }
+              }
+            }
+          });
+        }
+      }
+    });
+  </script>
+{% endblock %}
