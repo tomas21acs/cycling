@@ -144,12 +144,13 @@ class ActivitySummaryDisplay:
 @dataclass
 class ActivityAnalysisData:
     summary: ActivitySummaryDisplay
-    map_points: List[List[float]]
-    charts: Dict[str, List[Optional[float]]]
-    has_heart_rate: bool
-    has_power: bool
-    has_speed: bool
-    has_elevation: bool
+    coords: List[List[float]]
+    time_labels: List[str]
+    dist_labels: List[float]
+    hr_values: List[Optional[float]]
+    power_values: List[Optional[float]]
+    speed_values: List[Optional[float]]
+    elev_values: List[Optional[float]]
 
 
 # --- Utility functions ---------------------------------------------------------
@@ -163,6 +164,15 @@ def format_time(seconds: float) -> str:
     if hours:
         return f"{hours:02d}:{minutes:02d}:{secs:02d}"
     return f"{minutes:02d}:{secs:02d}"
+
+
+def format_hhmmss(seconds: float) -> str:
+    """Format elapsed time in HH:MM:SS regardless of duration."""
+
+    seconds = int(round(seconds))
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 def moving_average(data: Iterable[float], window: int) -> np.ndarray:
@@ -409,7 +419,7 @@ def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData
         if p.lat is not None and p.lon is not None
     ]
     if len(map_points) < 2:
-        raise ValueError("Soubor neobsahuje polohu.")
+        raise ValueError("Soubor neobsahuje GPS data.")
 
     total_distance = 0.0
     total_ascent = 0.0
@@ -511,23 +521,15 @@ def build_activity_analysis(points: List[ActivityPoint]) -> ActivityAnalysisData
         max_power=f"{max_power:.0f}" if max_power is not None else "—",
     )
 
-    charts = {
-        "time_labels": [format_time(seconds) for seconds in elapsed_seconds],
-        "distance_labels": [round(distance / 1000.0, 3) for distance in cumulative_distances],
-        "heart_rate": hr_series,
-        "power": power_series,
-        "speed": speed_series,
-        "elevation": elevation_series,
-    }
-
     return ActivityAnalysisData(
         summary=summary,
-        map_points=[[float(lat), float(lon)] for lat, lon in map_points],
-        charts=charts,
-        has_heart_rate=any(value is not None for value in hr_series),
-        has_power=any(value is not None for value in power_series),
-        has_speed=any(value is not None for value in speed_series),
-        has_elevation=any(value is not None for value in elevation_series),
+        coords=[[float(lat), float(lon)] for lat, lon in map_points],
+        time_labels=[format_hhmmss(seconds) for seconds in elapsed_seconds],
+        dist_labels=[round(distance / 1000.0, 3) for distance in cumulative_distances],
+        hr_values=hr_series,
+        power_values=power_series,
+        speed_values=speed_series,
+        elev_values=elevation_series,
     )
 
 
