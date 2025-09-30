@@ -63,8 +63,6 @@ def load_user(user_id: str) -> Optional[User]:
 with app.app_context():
     db.create_all()
 
-app.jinja_env.globals.update(format_time=format_time, format_hhmmss=format_hhmmss)
-
 # --- Constants -----------------------------------------------------------------
 SEGMENT_LENGTH_METERS = 200.0
 GRAVITY = 9.81
@@ -239,6 +237,9 @@ def format_hhmmss(seconds: float) -> str:
     hours, remainder = divmod(seconds, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+app.jinja_env.globals.update(format_time=format_time, format_hhmmss=format_hhmmss)
 
 
 def moving_average(data: Iterable[float], window: int) -> np.ndarray:
