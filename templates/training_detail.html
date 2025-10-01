@@ -36,6 +36,9 @@
             <table class="table table-sm mb-0">
               <tbody>
                 <tr><th>Celkový čas</th><td>{{ analysis.summary.total_time }}</td></tr>
+                {% if training.bike %}
+                  <tr><th>Použité kolo</th><td>{{ training.bike.name }} ({{ '%.1f'|format(training.bike.weight) }} kg)</td></tr>
+                {% endif %}
                 <tr><th>Vzdálenost</th><td>{{ analysis.summary.distance_km }} km</td></tr>
                 <tr><th>Převýšení ↑</th><td>{{ analysis.summary.elevation_gain }}{% if analysis.summary.elevation_gain != '—' %} m{% endif %}</td></tr>
                 <tr><th>Převýšení ↓</th><td>{{ analysis.summary.elevation_loss }}{% if analysis.summary.elevation_loss != '—' %} m{% endif %}</td></tr>

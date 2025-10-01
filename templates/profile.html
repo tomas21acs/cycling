@@ -1,0 +1,145 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <div class="row g-4">
+    <div class="col-12 col-xl-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h1 class="h4 mb-3">Osobní údaje</h1>
+          <p class="text-muted">Zadejte své výkonnostní parametry. Použijí se při analýze tréninků i výpočtu zón.</p>
+          <form method="post">
+            {{ profile_form.hidden_tag() }}
+            <div class="mb-3">
+              {{ profile_form.ftp.label(class_="form-label") }}
+              {{ profile_form.ftp(class_="form-control", min="50", step="1") }}
+              {% for error in profile_form.ftp.errors %}
+                <div class="form-text text-danger">{{ error }}</div>
+              {% endfor %}
+            </div>
+            <div class="mb-3">
+              {{ profile_form.max_hr.label(class_="form-label") }}
+              {{ profile_form.max_hr(class_="form-control", min="60", max="240") }}
+              {% for error in profile_form.max_hr.errors %}
+                <div class="form-text text-danger">{{ error }}</div>
+              {% endfor %}
+            </div>
+            <div class="mb-3">
+              {{ profile_form.weight.label(class_="form-label") }}
+              {{ profile_form.weight(class_="form-control", min="30", step="0.1") }}
+              {% for error in profile_form.weight.errors %}
+                <div class="form-text text-danger">{{ error }}</div>
+              {% endfor %}
+            </div>
+            {{ profile_form.submit(class_="btn btn-primary") }}
+          </form>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-6">
+      <div class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h2 class="h5 mb-3">Výkonové zóny</h2>
+          {% if power_zones %}
+            <div class="table-responsive">
+              <table class="table table-sm">
+                <thead>
+                  <tr><th>Zóna</th><th>Percenta</th><th>Výkon</th></tr>
+                </thead>
+                <tbody>
+                  {% for zone in power_zones %}
+                    <tr><td>{{ zone.zone }}</td><td>{{ zone.percent }}</td><td>{{ zone.watt }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="text-muted mb-0">Vyplňte FTP a uložte profil, aby bylo možné zóny vypočítat.</p>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h2 class="h5 mb-3">Tepové zóny</h2>
+          {% if hr_zones %}
+            <div class="table-responsive">
+              <table class="table table-sm">
+                <thead>
+                  <tr><th>Zóna</th><th>Percenta</th><th>Tep</th></tr>
+                </thead>
+                <tbody>
+                  {% for zone in hr_zones %}
+                    <tr><td>{{ zone.zone }}</td><td>{{ zone.percent }}</td><td>{{ zone.bpm }}</td></tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="text-muted mb-0">Vyplňte maximální tep a uložte profil, aby bylo možné zóny vypočítat.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4 mt-1">
+    <div class="col-12 col-xl-6">
+      <div class="card shadow-sm h-100">
+        <div class="card-body">
+          <h2 class="h5 mb-3">Moje kola</h2>
+          <form method="post" action="{{ url_for('bike_add') }}" class="row g-3 align-items-end">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <div class="col-12 col-md-7">
+              {{ bike_form.name.label(class_="form-label") }}
+              {{ bike_form.name(class_="form-control", placeholder="Např. Silnička") }}
+            </div>
+            <div class="col-12 col-md-3">
+              {{ bike_form.weight.label(class_="form-label") }}
+              {{ bike_form.weight(class_="form-control", step="0.1", min="2") }}
+            </div>
+            <div class="col-12 col-md-2 d-grid">
+              {{ bike_form.submit(class_="btn btn-outline-primary") }}
+            </div>
+          </form>
+          {% if bikes %}
+            <div class="table-responsive mt-4">
+              <table class="table table-sm">
+                <thead>
+                  <tr><th>Název</th><th>Hmotnost</th><th class="text-end">Akce</th></tr>
+                </thead>
+                <tbody>
+                  {% for bike in bikes %}
+                    <tr>
+                      <td>{{ bike.name }}</td>
+                      <td>{{ '%.1f'|format(bike.weight) }} kg</td>
+                      <td class="text-end">
+                        <form method="post" action="{{ url_for('bike_delete', bike_id=bike.id) }}" class="d-inline">
+                          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                          <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('Opravdu odstranit toto kolo?');">Smazat</button>
+                        </form>
+                      </td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            <p class="text-muted mt-4 mb-0">Zatím nemáte přidané žádné kolo.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-xl-6">
+      <div class="alert alert-info h-100 d-flex align-items-center" role="alert">
+        <div>
+          <h2 class="h5">Co je potřeba pro analýzu?</h2>
+          <p class="mb-1">Abychom dokázali správně vyhodnotit tréninky, je nutné mít uložené FTP, maximální tep, vlastní váhu a alespoň jedno kolo.</p>
+          {% if profile_complete %}
+            <p class="mb-0"><span class="badge bg-success">Profil je kompletní</span></p>
+          {% else %}
+            <p class="mb-0"><span class="badge bg-warning text-dark">Profil není kompletní</span> – doplňte chybějící údaje a přidejte kolo.</p>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endblock %}

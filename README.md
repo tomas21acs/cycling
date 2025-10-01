@@ -32,6 +32,7 @@ Aplikace poběží na http://localhost:5000.
 ## Uživatelské účty
 - Registrace a přihlášení (Flask-Login + Flask-WTF, hesla hashována přes bcrypt).
 - Každý uživatel vidí pouze své uložené tréninky.
+- Po registraci je potřeba vyplnit stránku **Profil** (FTP, max. tep, váha) a přidat alespoň jedno kolo; tyto údaje se používají při analýze a volbě kola pro každý trénink.
 - Nahrané soubory jsou uloženy v `instance/uploads/` a slouží k opětovnému zobrazení detailu.
 
 ## Výchozí fyzikální konstanty

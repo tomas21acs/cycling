@@ -29,8 +29,8 @@ import bcrypt
 from werkzeug.utils import secure_filename
 from sqlalchemy.exc import IntegrityError
 
-from forms import LoginForm, RegisterForm
-from models import Training, User, db
+from forms import BikeForm, LoginForm, ProfileForm, RegisterForm
+from models import Bike, Training, User, db
 
 try:
     from fitparse import FitFile
@@ -197,6 +197,69 @@ class ActivityAnalysisData:
     power_values: List[Optional[float]]
     speed_values: List[Optional[float]]
     elev_values: List[Optional[float]]
+
+
+def is_profile_complete(user: User) -> bool:
+    """Return whether the user filled mandatory physiology data and has a bike."""
+
+    if user.ftp is None or user.ftp <= 0:
+        return False
+    if user.max_hr is None or user.max_hr <= 0:
+        return False
+    if user.weight is None or user.weight <= 0:
+        return False
+    return bool(user.bikes)
+
+
+def build_power_zones(ftp: Optional[float]) -> List[Dict[str, str]]:
+    """Compute 7 classic power zones from FTP."""
+
+    if not ftp or ftp <= 0:
+        return []
+
+    zones = [
+        ("Z1", "<55%", (0.0, ftp * 0.55), "<"),
+        ("Z2", "56–75%", (ftp * 0.56, ftp * 0.75), None),
+        ("Z3", "76–90%", (ftp * 0.76, ftp * 0.90), None),
+        ("Z4", "91–105%", (ftp * 0.91, ftp * 1.05), None),
+        ("Z5", "106–120%", (ftp * 1.06, ftp * 1.20), None),
+        ("Z6", "121–150%", (ftp * 1.21, ftp * 1.50), None),
+        ("Z7", ">150%", (ftp * 1.50, None), ">"),
+    ]
+
+    formatted: List[Dict[str, str]] = []
+    for label, percent, (low, high), modifier in zones:
+        if modifier == "<":
+            watt = f"< {low:.0f} W"
+        elif modifier == ">":
+            assert low is not None
+            watt = f"> {low:.0f} W"
+        else:
+            assert low is not None and high is not None
+            watt = f"{low:.0f} – {high:.0f} W"
+        formatted.append({"zone": label, "percent": percent, "watt": watt})
+    return formatted
+
+
+def build_heart_rate_zones(max_hr: Optional[int]) -> List[Dict[str, str]]:
+    """Return 5 heart rate zones from maximal heart rate."""
+
+    if not max_hr or max_hr <= 0:
+        return []
+
+    ranges = [
+        ("Z1", "50–60%", 0.50, 0.60),
+        ("Z2", "60–70%", 0.60, 0.70),
+        ("Z3", "70–80%", 0.70, 0.80),
+        ("Z4", "80–90%", 0.80, 0.90),
+        ("Z5", "90–100%", 0.90, 1.00),
+    ]
+    zones: List[Dict[str, str]] = []
+    for label, percent, start, end in ranges:
+        lower = math.floor(max_hr * start)
+        upper = math.floor(max_hr * end)
+        zones.append({"zone": label, "percent": percent, "bpm": f"{lower} – {upper} bpm"})
+    return zones
 
 
 @dataclass
@@ -1128,7 +1191,7 @@ def register() -> str:
         else:
             login_user(user)
             flash("Registrace proběhla úspěšně.", "success")
-            return redirect(url_for("hero"))
+            return redirect(url_for("profile"))
 
     return render_template("register.html", form=form)
 
@@ -1148,7 +1211,9 @@ def login() -> str:
             login_user(user)
             flash("Přihlášení proběhlo úspěšně.", "success")
             next_url = request.args.get("next")
-            return redirect(next_url or url_for("hero"))
+            if not next_url:
+                next_url = url_for("profile" if not is_profile_complete(user) else "hero")
+            return redirect(next_url)
         flash("Neplatné přihlašovací údaje.", "danger")
 
     return render_template("login.html", form=form)
@@ -1160,6 +1225,74 @@ def logout() -> Response:
     logout_user()
     flash("Byli jste odhlášeni.", "info")
     return redirect(url_for("hero"))
+
+
+@app.route("/profile", methods=["GET", "POST"])
+@login_required
+def profile() -> str:
+    """Allow athletes to record physiology data and manage bikes."""
+
+    profile_form = ProfileForm(obj=current_user)
+    bike_form = BikeForm()
+
+    if profile_form.validate_on_submit():
+        current_user.ftp = float(profile_form.ftp.data)
+        current_user.max_hr = int(profile_form.max_hr.data)
+        current_user.weight = float(profile_form.weight.data)
+        db.session.commit()
+        flash("Profil byl uložen.", "success")
+        return redirect(url_for("profile"))
+
+    power_zones = build_power_zones(current_user.ftp)
+    hr_zones = build_heart_rate_zones(current_user.max_hr)
+
+    return render_template(
+        "profile.html",
+        profile_form=profile_form,
+        bike_form=bike_form,
+        power_zones=power_zones,
+        hr_zones=hr_zones,
+        bikes=current_user.bikes,
+        profile_complete=is_profile_complete(current_user),
+    )
+
+
+@app.route("/bike/add", methods=["POST"])
+@login_required
+def bike_add() -> Response:
+    """Persist a new bike for the current user."""
+
+    form = BikeForm()
+    if form.validate_on_submit():
+        bike = Bike(user=current_user, name=form.name.data.strip(), weight=float(form.weight.data))
+        db.session.add(bike)
+        db.session.commit()
+        flash("Kolo bylo přidáno.", "success")
+    else:
+        for errors in form.errors.values():
+            for error in errors:
+                flash(error, "danger")
+    return redirect(url_for("profile"))
+
+
+@app.route("/bike/<int:bike_id>/delete", methods=["POST"])
+@login_required
+def bike_delete(bike_id: int) -> Response:
+    """Delete a bike when it is not used by existing trainings."""
+
+    bike = Bike.query.filter_by(id=bike_id, user_id=current_user.id).first()
+    if bike is None:
+        flash("Kolo nebylo nalezeno.", "warning")
+        return redirect(url_for("profile"))
+
+    if bike.trainings:
+        flash("Kolo je přiřazeno k uloženým tréninkům a nelze ho odstranit.", "warning")
+        return redirect(url_for("profile"))
+
+    db.session.delete(bike)
+    db.session.commit()
+    flash("Kolo bylo odstraněno.", "info")
+    return redirect(url_for("profile"))
 
 
 @app.route("/calculator", methods=["GET", "POST"])
@@ -1229,15 +1362,25 @@ def calculator() -> str:
 @app.route("/analysis", methods=["GET", "POST"])
 @login_required
 def analysis() -> str:
+    if not is_profile_complete(current_user):
+        flash("Nejprve si vyplňte profil a přidejte alespoň jedno kolo.", "warning")
+        return redirect(url_for("profile"))
+
     errors: List[str] = []
-    ftp_default = request.form.get("ftp", "")
+    ftp_default = request.form.get("ftp") or (f"{current_user.ftp:.0f}" if current_user.ftp else "")
     title_default = request.form.get("title", "")
+    selected_bike_id = request.form.get("bike_id", "")
+    bikes = list(current_user.bikes)
+    if not selected_bike_id and bikes:
+        selected_bike_id = str(bikes[0].id)
 
     if request.method == "POST":
         upload = request.files.get("workout")
         ftp_text = request.form.get("ftp", "")
         title = request.form.get("title", "").strip()
         ftp_value: Optional[float] = None
+        bike_id_raw = request.form.get("bike_id", "")
+        bike: Optional[Bike] = None
 
         try:
             ftp_value = float(ftp_text) if ftp_text else 250.0
@@ -1246,10 +1389,19 @@ def analysis() -> str:
         except ValueError:
             errors.append("FTP musí být kladné číslo.")
 
+        try:
+            bike_id = int(bike_id_raw)
+            bike = Bike.query.filter_by(id=bike_id, user_id=current_user.id).first()
+            if bike is None:
+                raise ValueError
+            selected_bike_id = str(bike.id)
+        except (ValueError, TypeError):
+            errors.append("Vyberte prosím kolo, na kterém jste jeli.")
+
         if not upload or upload.filename == "":
             errors.append("Musíte nahrát TCX nebo FIT soubor.")
 
-        if not errors and upload and ftp_value is not None:
+        if not errors and upload and ftp_value is not None and bike is not None:
             file_bytes = upload.read()
             if not file_bytes:
                 errors.append("Soubor je prázdný.")
@@ -1302,6 +1454,7 @@ def analysis() -> str:
                             calories=activity.stats.calories,
                             ftp_used=ftp_value,
                             file_path=str(storage_path),
+                            bike=bike,
                         )
                         db.session.add(training)
                         db.session.commit()
@@ -1320,6 +1473,8 @@ def analysis() -> str:
         errors=errors,
         ftp_value=ftp_default,
         title_value=title_default,
+        bikes=bikes,
+        selected_bike_id=selected_bike_id,
     )
 
 

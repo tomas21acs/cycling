@@ -28,11 +28,20 @@
                 <label for="workout" class="form-label">Tréninkový soubor (TCX nebo FIT)</label>
                 <input type="file" class="form-control" id="workout" name="workout" accept=".tcx,.fit" required>
               </div>
-              <div class="col-12 col-lg-3">
+              <div class="col-12 col-md-4 col-lg-2">
+                <label for="bike_id" class="form-label">Kolo</label>
+                <select class="form-select" id="bike_id" name="bike_id" required>
+                  {% for bike in bikes %}
+                    {% set bike_id_str = '%s'|format(bike.id) %}
+                    <option value="{{ bike.id }}" {% if selected_bike_id and selected_bike_id == bike_id_str %}selected{% endif %}>{{ bike.name }} ({{ '%.1f'|format(bike.weight) }} kg)</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div class="col-12 col-md-4 col-lg-2">
                 <label for="ftp" class="form-label">FTP (W)</label>
                 <input type="number" min="100" class="form-control" id="ftp" name="ftp" value="{{ ftp_value or '250' }}" required>
               </div>
-              <div class="col-12 col-lg-3">
+              <div class="col-12 col-md-4 col-lg-2">
                 <label for="title" class="form-label">Název tréninku</label>
                 <input type="text" class="form-control" id="title" name="title" value="{{ title_value }}" placeholder="Volitelné">
               </div>
