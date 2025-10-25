@@ -34,14 +34,15 @@
       import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } 
         from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
-      // ⚠️ ZDE vlož svůj skutečný Firebase config z konzole
+      // Tvůj skutečný Firebase projekt
       const firebaseConfig = {
-        apiKey: "TVŮJ_API_KEY",
-        authDomain: "tvuj-projekt.firebaseapp.com",
-        projectId: "tvuj-projekt",
-        storageBucket: "tvuj-projekt.appspot.com",
-        messagingSenderId: "XXXXXXXXXXXX",
-        appId: "1:XXXXXXXXXXXX:web:XXXXXXXXXXXX"
+        apiKey: "AIzaSyDW7KIdVsSjNVtWSg5p3M9pYF9uZytAEeE",
+        authDomain: "cycling-2fc8f.firebaseapp.com",
+        projectId: "cycling-2fc8f",
+        storageBucket: "cycling-2fc8f.firebasestorage.app",
+        messagingSenderId: "870200367593",
+        appId: "1:870200367593:web:5d2d82954373e223965378",
+        measurementId: "G-TFHNX1LC5M"
       };
 
       const app = initializeApp(firebaseConfig);
@@ -69,8 +70,6 @@
           loginBtn.classList.add("d-none");
           logoutBtn.classList.remove("d-none");
           console.log("✅ Přihlášen:", user.email);
-
-          // Ulož ID uživatele do localStorage pro Flask
           localStorage.setItem("firebase_uid", user.uid);
         } else {
           loginBtn.classList.remove("d-none");
